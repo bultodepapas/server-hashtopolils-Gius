@@ -232,7 +232,7 @@ class StartupConfig {
   }
   
   public function getVersion(): string {
-    return "v1.0.0-rainbow5";
+    return "v1.0.0-Gius";
   }
   
   public function getBuild(): string {
