@@ -19,6 +19,7 @@
     "require": {
         "php": "^7.4 || ^8.0",
         "ext-json": "*",
+        "composer/semver": "^3.0",
         "crell/api-problem": "^3.6",
         "middlewares/negotiation": "^2.1",
         "monolog/monolog": "^2.8",
