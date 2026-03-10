@@ -2,8 +2,10 @@
 
 namespace DBA;
 
+use Exception;
 use MassUpdateSet;
 use PDO, PDOStatement, PDOException;
+use StartupConfig;
 use UI;
 
 /**
@@ -12,17 +14,19 @@ use UI;
  * models from Database. It handles the DB calling and caching of objects.
  */
 abstract class AbstractModelFactory {
+  private const MAPPING_PREFIX = "htp_";
+  
   /**
-   * @var PDO
+   * @var PDO|null
    */
-  private static $dbh = null;
+  private static ?PDO $dbh = null;
   
   /**
    * Return the Models name
    *
    * @return string The name of the model associated with this factory
    */
-  abstract function getModelName();
+  abstract function getModelName(): string;
   
   /**
    * Return the Models associated table
@@ -32,14 +36,19 @@ abstract class AbstractModelFactory {
    *
    * @return string The name of the table associated with this factory
    */
-  abstract function getModelTable();
+  abstract function getModelTable(): string;
+  
+  /**
+   * @return bool
+   */
+  abstract function isMapping(): bool;
   
   /**
    * Returns wether the associated model is able to be cached or not
    *
    * @return boolean True, if the object might be cached, False if not
    */
-  abstract function isCachable();
+  abstract function isCachable(): bool;
   
   /**
    * Returns wether the models valid time on cache.
@@ -49,7 +58,7 @@ abstract class AbstractModelFactory {
    *
    * @return int valid time in seconds, -1 if model shouldn't be cached
    */
-  abstract function getCacheValidTime();
+  abstract function getCacheValidTime(): int;
   
   /**
    * Returns an empty instance of the associated object
@@ -60,7 +69,7 @@ abstract class AbstractModelFactory {
    *
    * @return AbstractModel
    */
-  abstract function getNullObject();
+  abstract function getNullObject(): AbstractModel;
   
   /**
    * This function inits, an objects values from a dict and returns it;
@@ -71,7 +80,42 @@ abstract class AbstractModelFactory {
    * @param $dict array dict of values and keys
    * @return AbstractModel An object of the factories type
    */
-  abstract function createObjectFromDict($pk, $dict);
+  abstract function createObjectFromDict(string $pk, array $dict): AbstractModel;
+  
+  public function getMappedModelTable(): string {
+    if ($this->isMapping()) {
+      return self::MAPPING_PREFIX . $this->getModelName();
+    }
+    return $this->getModelName();
+  }
+  
+  private static function getMappedModelKeys(AbstractModel $model): array {
+    // check the keys of the table for required mapping from features
+    $keys = [];
+    $features = $model->getFeatures();
+    foreach (array_keys($model->getKeyValueDict()) as $key) {
+      if ($features[$key]["dba_mapping"]) {
+        $keys[] = self::MAPPING_PREFIX . $key;
+      }
+      else {
+        $keys[] = $key;
+      }
+    }
+    return $keys;
+  }
+  
+  /**
+   * @param AbstractModel $model
+   * @param string $key
+   * @return string
+   */
+  public static function getMappedModelKey(AbstractModel $model, string $key): string {
+    $features = $model->getFeatures();
+    if ($features[$key]["dba_mapping"]) {
+      return self::MAPPING_PREFIX . $key;
+    }
+    return $key;
+  }
   
   /**
    * Saves the passed model in database, and returns it with the real id
@@ -84,29 +128,23 @@ abstract class AbstractModelFactory {
    * The Function returns null if the object could not be placed into the
    * database
    * @param $model AbstractModel model to save
-   * @return AbstractModel
+   * @return AbstractModel|null
    */
-  public function save($model) {
+  public function save(AbstractModel $model): ?AbstractModel {
     $dict = $model->getKeyValueDict();
     
-    $query = "INSERT INTO " . $this->getModelTable();
-    $keys = array_keys($dict);
+    $query = "INSERT INTO " . $this->getMappedModelTable();
     $vals = array_values($dict);
     
-    $placeHolder = "(";
-    $query .= " (";
-    for ($i = 0; $i < count($keys); $i++) {
-      if ($i != count($keys) - 1) {
-        $query = $query . $keys[$i] . ",";
-        $placeHolder = $placeHolder . "?,";
-      }
-      else {
-        $query = $query . $keys[$i];
-        $placeHolder = $placeHolder . "?";
-      }
+    $keys = self::getMappedModelKeys($model);
+    
+    if ($vals[0] === -1 || $vals[0] === null) {
+      array_splice($vals, 0, 1);
+      array_splice($keys, 0, 1);
     }
-    $query = $query . ")";
-    $placeHolder = $placeHolder . ")";
+    
+    $query .= " (" . implode(",", $keys) . ") ";
+    $placeHolder = " (" . implode(",", array_fill(0, count($keys), "?")) . ")";
     
     $query = $query . " VALUES " . $placeHolder;
     
@@ -114,16 +152,21 @@ abstract class AbstractModelFactory {
     $stmt = $dbh->prepare($query);
     $stmt->execute($vals);
     
-    $id = intval($dbh->lastInsertId());
-    if ($id != 0) {
-      $model->setId($id);
-      return $model;
-    }
-    else if ($model->getId() != 0) {
-      return $model;
+    if ($model->getId() === null || $model->getId() === -1) {
+      $id = intval($dbh->lastInsertId());
+      if ($id != 0) {
+        $model->setId($id);
+        return $model;
+      }
+      else if ($model->getId() != 0) {
+        return $model;
+      }
+      else {
+        return null;
+      }
     }
     else {
-      return null;
+      return $model;
     }
   }
   
@@ -131,12 +174,12 @@ abstract class AbstractModelFactory {
    * @param $arr array
    * @return Filter[]
    */
-  private function getFilters($arr) {
-    if (!is_array($arr['filter'])) {
-      $arr['filter'] = array($arr['filter']);
+  private function getFilters(array $arr): array {
+    if (!is_array($arr[Factory::FILTER])) {
+      $arr[Factory::FILTER] = array($arr[Factory::FILTER]);
     }
-    if (isset($arr['filter'])) {
-      return $arr['filter'];
+    if (isset($arr[Factory::FILTER])) {
+      return $arr[Factory::FILTER];
     }
     return array();
   }
@@ -145,12 +188,12 @@ abstract class AbstractModelFactory {
    * @param $arr array
    * @return Order[]
    */
-  private function getOrders($arr) {
-    if (!is_array($arr['order'])) {
-      $arr['order'] = array($arr['order']);
+  private function getOrders(array $arr): array {
+    if (!is_array($arr[Factory::ORDER])) {
+      $arr[Factory::ORDER] = array($arr[Factory::ORDER]);
     }
-    if (isset($arr['order'])) {
-      return $arr['order'];
+    if (isset($arr[Factory::ORDER])) {
+      return $arr[Factory::ORDER];
     }
     return array();
   }
@@ -159,12 +202,12 @@ abstract class AbstractModelFactory {
    * @param $arr array
    * @return Group[]
    */
-  private function getGroups($arr) {
-    if (!is_array($arr['group'])) {
-      $arr['group'] = array($arr['group']);
+  private function getGroups(array $arr): array {
+    if (!is_array($arr[Factory::GROUP])) {
+      $arr[Factory::GROUP] = array($arr[Factory::GROUP]);
     }
-    if (isset($arr['group'])) {
-      return $arr['group'];
+    if (isset($arr[Factory::GROUP])) {
+      return $arr[Factory::GROUP];
     }
     return array();
   }
@@ -173,12 +216,12 @@ abstract class AbstractModelFactory {
    * @param $arr array
    * @return Join[]
    */
-  private function getJoins($arr) {
-    if (!is_array($arr['join'])) {
-      $arr['join'] = array($arr['join']);
+  private function getJoins(array $arr): array {
+    if (!is_array($arr[Factory::JOIN])) {
+      $arr[Factory::JOIN] = array($arr[Factory::JOIN]);
     }
-    if (isset($arr['join'])) {
-      return $arr['join'];
+    if (isset($arr[Factory::JOIN])) {
+      return $arr[Factory::JOIN];
     }
     return array();
   }
@@ -192,27 +235,25 @@ abstract class AbstractModelFactory {
    * @param $model AbstractModel model to update
    * @return PDOStatement
    */
-  public function update($model) {
+  public function update(AbstractModel $model): PDOStatement {
     $dict = $model->getKeyValueDict();
     
-    $query = "UPDATE " . $this->getModelTable() . " SET ";
+    $query = "UPDATE " . $this->getMappedModelTable() . " SET ";
     
-    $keys = array_keys($dict);
-    $values = array();
+    $values = array_values($dict);
+    $keys = self::getMappedModelKeys($model);
     
     for ($i = 0; $i < count($keys); $i++) {
       if ($i != count($keys) - 1) {
-        $query = $query . $keys[$i] . "=?,";
-        array_push($values, $dict[$keys[$i]]);
+        $query .= $keys[$i] . "=?, ";
       }
       else {
-        $query = $query . $keys[$i] . "=?";
-        array_push($values, $dict[$keys[$i]]);
+        $query .= $keys[$i] . "=?";
       }
     }
     
-    $query = $query . " WHERE " . $model->getPrimaryKey() . "=?";
-    array_push($values, $model->getPrimaryKeyValue());
+    $query .= " WHERE " . $model->getPrimaryKey() . "=?";
+    $values[] = $model->getPrimaryKeyValue();
     
     $stmt = $this->getDB()->prepare($query);
     $stmt->execute($values);
@@ -227,18 +268,18 @@ abstract class AbstractModelFactory {
    * @param $arr array key-value associations for update
    * @return PDOStatement
    */
-  public function mset(&$model, $arr) {
-    $query = "UPDATE " . $this->getModelTable() . " SET ";
+  public function mset(AbstractModel &$model, array $arr): PDOStatement {
+    $query = "UPDATE " . $this->getMappedModelTable() . " SET ";
     $elements = [];
     $values = [];
     foreach ($arr as $key => $val) {
-      $elements[] = $key . "=? ";
-      array_push($values, $val);
+      $elements[] = self::getMappedModelKey($model, $key) . "=? ";
+      $values[] = $val;
     }
     $query .= implode(", ", $elements);
     
     $query = $query . " WHERE " . $model->getPrimaryKey() . "=?";
-    array_push($values, $model->getPrimaryKeyValue());
+    $values[] = $model->getPrimaryKeyValue();
     
     $stmt = $this->getDB()->prepare($query);
     $stmt->execute($values);
@@ -253,16 +294,16 @@ abstract class AbstractModelFactory {
    * Returns the return of PDO::execute()
    * @param $model AbstractModel primary key of model
    * @param $key string key of the column to update
-   * @param $value string|int value to set
+   * @param $value
    * @return PDOStatement
    */
-  public function set(&$model, $key, $value) {
-    $query = "UPDATE " . $this->getModelTable() . " SET " . $key . "=?";
+  public function set(AbstractModel &$model, string $key, $value): PDOStatement {
+    $query = "UPDATE " . $this->getMappedModelTable() . " SET " . self::getMappedModelKey($model, $key) . "=?";
     
     $values = [];
     $query = $query . " WHERE " . $model->getPrimaryKey() . "=?";
-    array_push($values, $value);
-    array_push($values, $model->getPrimaryKeyValue());
+    $values[] = $value;
+    $values[] = $model->getPrimaryKeyValue();
     
     $stmt = $this->getDB()->prepare($query);
     $stmt->execute($values);
@@ -280,13 +321,14 @@ abstract class AbstractModelFactory {
    * @param $value int amount of increment
    * @return PDOStatement
    */
-  public function inc(&$model, $key, $value = 1) {
-    $query = "UPDATE " . $this->getModelTable() . " SET " . $key . "=" . $key . "+?";
+  public function inc(AbstractModel &$model, string $key, int $value = 1): PDOStatement {
+    $mapped_key = self::getMappedModelKey($model, $key);
+    $query = "UPDATE " . $this->getMappedModelTable() . " SET " . $mapped_key . "=" . $mapped_key . "+?";
     
     $values = [];
     $query = $query . " WHERE " . $model->getPrimaryKey() . "=?";
-    array_push($values, $value);
-    array_push($values, $model->getPrimaryKeyValue());
+    $values[] = $value;
+    $values[] = $model->getPrimaryKeyValue();
     
     $stmt = $this->getDB()->prepare($query);
     $stmt->execute($values);
@@ -304,13 +346,14 @@ abstract class AbstractModelFactory {
    * @param $value int amount of increment
    * @return PDOStatement
    */
-  public function dec(&$model, $key, $value = 1) {
-    $query = "UPDATE " . $this->getModelTable() . " SET " . $key . "=" . $key . "-?";
+  public function dec(AbstractModel &$model, string $key, int $value = 1): PDOStatement {
+    $mapped_key = self::getMappedModelKey($model, $key);
+    $query = "UPDATE " . $this->getMappedModelTable() . " SET " . $mapped_key . "=" . $mapped_key . "-?";
     
     $values = [];
     $query = $query . " WHERE " . $model->getPrimaryKey() . "=?";
-    array_push($values, $value);
-    array_push($values, $model->getPrimaryKeyValue());
+    $values[] = $value;
+    $values[] = $model->getPrimaryKeyValue();
     
     $stmt = $this->getDB()->prepare($query);
     $stmt->execute($values);
@@ -323,29 +366,24 @@ abstract class AbstractModelFactory {
    * @param $models AbstractModel[]
    * @return bool|PDOStatement
    */
-  public function massSave($models) {
+  public function massSave(array $models): bool|PDOStatement {
     if (sizeof($models) == 0) {
       return false;
     }
-    $dict = $models[0]->getKeyValueDict();
     
-    $query = "INSERT INTO " . $this->getModelTable();
-    $query .= "( ";
-    $keys = array_keys($dict);
+    $keys = self::getMappedModelKeys($models[0]);
+    $query = "INSERT INTO " . $this->getMappedModelTable();
     
-    $placeHolder = "(";
-    for ($i = 0; $i < count($keys); $i++) {
-      if ($i != count($keys) - 1) {
-        $query = $query . $keys[$i] . ",";
-        $placeHolder = $placeHolder . "?,";
-      }
-      else {
-        $query = $query . $keys[$i];
-        $placeHolder = $placeHolder . "?";
-      }
+    $pkInclude = false;
+    if ($models[0]->getId() !== -1 && $models[0]->getId() !== null) {
+      $pkInclude = true;
     }
-    $query = $query . ")";
-    $placeHolder = $placeHolder . ")";
+    else {
+      array_splice($keys, 0, 1);
+    }
+    
+    $query .= " (" . implode(",", $keys) . ") ";
+    $placeHolder = " (" . implode(",", array_fill(0, count($keys), "?")) . ")";
     
     $query = $query . " VALUES ";
     $vals = array();
@@ -354,11 +392,11 @@ abstract class AbstractModelFactory {
       if ($x < sizeof($models) - 1) {
         $query .= ", ";
       }
-      if ($models[$x]->getId() === 0) {
-        $models[$x]->setId(null);
-      }
       $dict = $models[$x]->getKeyValueDict();
-      foreach (array_values($dict) as $val) {
+      if (!$pkInclude) {
+        array_splice($dict, 0, 1);
+      }
+      foreach ($dict as $val) {
         $vals[] = $val;
       }
     }
@@ -375,32 +413,20 @@ abstract class AbstractModelFactory {
    * @param $op string either min or max
    * @return mixed
    */
-  public function minMaxFilter($options, $sumColumn, $op) {
+  public function minMaxFilter(array $options, string $sumColumn, string $op): mixed {
     if (strtolower($op) == "min") {
       $op = "MIN";
     }
     else {
       $op = "MAX";
     }
-    $query = "SELECT $op($sumColumn) AS column_" . strtolower($op) . " ";
-    $query = $query . " FROM " . $this->getModelTable();
+    $query = "SELECT $op(" . self::getMappedModelKey($this->getNullObject(), $sumColumn) . ") AS column_" . strtolower($op) . " ";
+    $query = $query . " FROM " . $this->getMappedModelTable();
     
     $vals = array();
     
-    if (array_key_exists("filter", $options)) {
-      $query .= $this->applyFilters($vals, $options['filter']);
-    }
-    
-    if (!array_key_exists("order", $options)) {
-      // Add a asc order on the primary keys as a standard
-      $oF = new OrderFilter($this->getNullObject()->getPrimaryKey(), "ASC");
-      $orderOptions = array(
-        $oF
-      );
-      $options['order'] = $orderOptions;
-    }
-    if (count($options['order']) != 0) {
-      $query .= $this->applyOrder($this->getOrders($options));
+    if (array_key_exists(Factory::FILTER, $options)) {
+      $query .= $this->applyFilters($vals, $options[Factory::FILTER]);
     }
     
     $dbh = self::getDB();
@@ -411,26 +437,67 @@ abstract class AbstractModelFactory {
     return $row['column_' . strtolower($op)];
   }
   
-  public function sumFilter($options, $sumColumn) {
-    $query = "SELECT SUM($sumColumn) AS sum ";
-    $query = $query . " FROM " . $this->getModelTable();
+  public function multicolAggregationFilter($options, $aggregations) {
+    //$options: as usual
+    //$columns: array of Aggregation objects
+    
+    $elements = [];
+    foreach ($aggregations as $aggregation) {
+      $elements[] = $aggregation->getQueryString($this);
+    }
+    
+    $query = "SELECT " . join(",", $elements);
+    $query = $query . " FROM " . $this->getMappedModelTable();
     
     $vals = array();
     
-    if (array_key_exists("filter", $options)) {
-      $query .= $this->applyFilters($vals, $options['filter']);
+    if (array_key_exists(Factory::JOIN, $options)) {
+      $query .= $this->applyJoins($options[Factory::JOIN]);
+    }
+    if (array_key_exists(Factory::FILTER, $options)) {
+      $query .= $this->applyFilters($vals, $options[Factory::FILTER]);
     }
     
-    if (!array_key_exists("order", $options)) {
-      // Add a asc order on the primary keys as a standard
-      $oF = new OrderFilter($this->getNullObject()->getPrimaryKey(), "ASC");
-      $orderOptions = array(
-        $oF
-      );
-      $options['order'] = $orderOptions;
+    $dbh = self::getDB();
+    $stmt = $dbh->prepare($query);
+    $stmt->execute($vals);
+    
+    return $stmt->fetch(PDO::FETCH_ASSOC);
+  }
+  
+  /**
+   * @param $options array options of query (filters and joins)
+   * @param $column string single column key which should be retrieved
+   * @return array of the column entries returned from this query
+   */
+  public function columnFilter(array $options, string $column): array {
+    $query = "SELECT " . Util::createPrefixedString($this->getMappedModelTable(), [self::getMappedModelKey($this->getNullObject(), $column)]);
+    $query = $query . " FROM " . $this->getMappedModelTable();
+    
+    $vals = array();
+    
+    if (array_key_exists(Factory::JOIN, $options)) {
+      $query .= $this->applyJoins($options[Factory::JOIN]);
     }
-    if (count($options['order']) != 0) {
-      $query .= $this->applyOrder($this->getOrders($options));
+    if (array_key_exists(Factory::FILTER, $options)) {
+      $query .= $this->applyFilters($vals, $options[Factory::FILTER]);
+    }
+    
+    $dbh = self::getDB();
+    $stmt = $dbh->prepare($query);
+    $stmt->execute($vals);
+    
+    return $stmt->fetchAll(PDO::FETCH_COLUMN);
+  }
+  
+  public function sumFilter($options, $sumColumn) {
+    $query = "SELECT SUM(" . self::getMappedModelKey($this->getNullObject(), $sumColumn) . ") AS sum ";
+    $query = $query . " FROM " . $this->getMappedModelTable();
+    
+    $vals = array();
+    
+    if (array_key_exists(Factory::FILTER, $options)) {
+      $query .= $this->applyFilters($vals, $options[Factory::FILTER]);
     }
     
     $dbh = self::getDB();
@@ -443,24 +510,16 @@ abstract class AbstractModelFactory {
   
   public function countFilter($options) {
     $query = "SELECT COUNT(*) AS count ";
-    $query = $query . " FROM " . $this->getModelTable();
+    $query = $query . " FROM " . $this->getMappedModelTable();
     
     $vals = array();
     
-    if (array_key_exists("filter", $options)) {
-      $query .= $this->applyFilters($vals, $options['filter']);
+    if (array_key_exists(Factory::JOIN, $options)) {
+      $query .= $this->applyJoins($options[Factory::JOIN]);
     }
     
-    if (!array_key_exists("order", $options)) {
-      // Add a asc order on the primary keys as a standard
-      $oF = new OrderFilter($this->getNullObject()->getPrimaryKey(), "ASC");
-      $orderOptions = array(
-        $oF
-      );
-      $options['order'] = $orderOptions;
-    }
-    if (count($options['order']) != 0) {
-      $query .= $this->applyOrder($options['order']);
+    if (array_key_exists(Factory::FILTER, $options)) {
+      $query .= $this->applyFilters($vals, $options[Factory::FILTER]);
     }
     
     $dbh = self::getDB();
@@ -480,17 +539,10 @@ abstract class AbstractModelFactory {
    * to use this function
    *
    * @param $pk string primary key
-   * @return AbstractModel the with pk associated model or Null
-   *
+   * @return AbstractModel|null the with pk associated model or Null
    */
   public function get($pk) {
-    if (!$this->isCachable()) {
-      return $this->getFromDB($pk);
-    }
-    else {
-      // TODO: Implement caching
-      return $this->getFromDB($pk);
-    }
+    return $this->getFromDB($pk);
   }
   
   /**
@@ -501,30 +553,16 @@ abstract class AbstractModelFactory {
    * If the model is set to be cachable, the cache will also be updated
    *
    * @param $pk string primary key
-   * @return AbstractModel the with pk associated model or Null
+   * @return AbstractModel|null the with pk associated model or Null
    */
-  public function getFromDB($pk) {
-    $query = "SELECT ";
-    
-    $keys = array_keys($this->getNullObject()->getKeyValueDict());
-    
-    for ($i = 0; $i < count($keys); $i++) {
-      if ($i != count($keys) - 1) {
-        $query = $query . $keys[$i] . ",";
-      }
-      else {
-        $query = $query . $keys[$i];
-      }
-    }
-    $query = $query . " FROM " . $this->getModelTable();
-    
-    $query = $query . " WHERE " . $this->getNullObject()->getPrimaryKey() . "=?";
+  public function getFromDB($pk): ?AbstractModel {
+    $keys = self::getMappedModelKeys($this->getNullObject());
+    $query = "SELECT " . implode(", ", $keys);
+    $query .= " FROM " . $this->getMappedModelTable();
+    $query .= " WHERE " . $this->getNullObject()->getPrimaryKey() . "=?";
     
     $stmt = $this->getDB()->prepare($query);
-    $stmt->execute(array(
-        $pk
-      )
-    );
+    $stmt->execute(array($pk));
     if ($stmt->rowCount() != 0) {
       $row = $stmt->fetch(PDO::FETCH_ASSOC);
       return $this->createObjectFromDict($pk, $row);
@@ -543,32 +581,24 @@ abstract class AbstractModelFactory {
    * structure
    *
    * $options = array();
-   * $options['filter'] is an array of QueryFilter options
-   * $options['order'] is an array of OrderFilter options
-   * $options['join'] is an array of JoinFilter options
+   * $options[Factory::FILTER] is an array of QueryFilter options
+   * $options[Factory::ORDER] is an array of OrderFilter options
+   * $options[Factory::JOIN] is an array of JoinFilter options
    *
    * @param $options array containing option settings
    * @return AbstractModel[]|AbstractModel Returns a list of matching objects or Null
    */
-  private function filterWithJoin($options) {
+  private function filterWithJoin(array $options): array|AbstractModel {
+    $vals = array();
     $joins = $this->getJoins($options);
-    if (!is_array($joins)) {
-      $joins = array($joins);
-    }
-    $keys = array_keys($this->getNullObject()->getKeyValueDict());
-    $prefixedKeys = array();
     $factories = array($this);
-    foreach ($keys as $key) {
-      $prefixedKeys[] = $this->getModelTable() . "." . $key;
-      $tables[] = $this->getModelTable();
-    }
-    $query = "SELECT " . Util::createPrefixedString($this->getModelTable(), $this->getNullObject()->getKeyValueDict());
+    $query = "SELECT " . Util::createPrefixedString($this->getMappedModelTable(), self::getMappedModelKeys($this->getNullObject()));
     foreach ($joins as $join) {
       $joinFactory = $join->getOtherFactory();
       $factories[] = $joinFactory;
-      $query .= ", " . Util::createPrefixedString($joinFactory->getModelTable(), $joinFactory->getNullObject()->getKeyValueDict());
+      $query .= ", " . Util::createPrefixedString($joinFactory->getMappedModelTable(), self::getMappedModelKeys($joinFactory->getNullObject()));
     }
-    $query .= " FROM " . $this->getModelTable();
+    $query .= " FROM " . $this->getMappedModelTable();
     
     foreach ($joins as $join) {
       $joinFactory = $join->getOtherFactory();
@@ -576,33 +606,36 @@ abstract class AbstractModelFactory {
       if ($join->getOverrideOwnFactory() != null) {
         $localFactory = $join->getOverrideOwnFactory();
       }
-      $match1 = $join->getMatch1();
-      $match2 = $join->getMatch2();
-      $query .= " INNER JOIN " . $joinFactory->getModelTable() . " ON " . $localFactory->getModelTable() . "." . $match1 . "=" . $joinFactory->getModelTable() . "." . $match2 . " ";
+      $match1 = self::getMappedModelKey($localFactory->getNullObject(), $join->getMatch1());
+      $match2 = self::getMappedModelKey($joinFactory->getNullObject(), $join->getMatch2());
+      $query .= " " . $join->getJoinType() . " JOIN " . $joinFactory->getMappedModelTable() . " ON " . $localFactory->getMappedModelTable() . "." . $match1 . "=" . $joinFactory->getMappedModelTable() . "." . $match2 . " ";
+      $joinQueryFilters = $join->getQueryFilters();
+      if (count($joinQueryFilters) > 0) {
+        $query .= $this->applyFilters($vals, $joinQueryFilters, true);
+      }
     }
     
     // Apply all normal filter to this query
-    $vals = array();
-    if (array_key_exists("filter", $options)) {
-      $query .= $this->applyFilters($vals, $options['filter']);
+    if (array_key_exists(Factory::FILTER, $options)) {
+      $query .= $this->applyFilters($vals, $options[Factory::FILTER]);
     }
     
-    if (array_key_exists("group", $options)) {
+    if (array_key_exists(Factory::GROUP, $options)) {
       $query .= $this->applyGroups($this->getGroups($options));
     }
     
     // Apply order filter
-    if (!array_key_exists("order", $options)) {
+    if (!array_key_exists(Factory::ORDER, $options)) {
       // Add a asc order on the primary keys as a standard
       $oF = new OrderFilter($this->getNullObject()->getPrimaryKey(), "ASC");
-      $orderOptions = array(
-        $oF
-      );
-      $options['order'] = $orderOptions;
+      $orderOptions = array($oF);
+      $options[Factory::ORDER] = $orderOptions;
     }
-    $query .= $this->applyOrder($options['order']);
+    $query .= $this->applyOrder($options[Factory::ORDER]);
     
-    
+    if (array_key_exists(Factory::LIMIT, $options)) {
+      $query .= $this->applyLimit($options[Factory::LIMIT]);
+    }
     $dbh = self::getDB();
     $stmt = $dbh->prepare($query);
     $stmt->execute($vals);
@@ -616,48 +649,58 @@ abstract class AbstractModelFactory {
     
     while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
       foreach ($row as $k => $v) {
+        $k = strtolower($k);
         foreach ($factories as $factory) {
-          if (Util::startsWith($k, $factory->getModelTable())) {
-            $column = str_replace($factory->getModelTable() . ".", "", $k);
-            $values[$factory->getModelTable()][$column] = $v;
+          if (Util::startsWith($k, strtolower($factory->getMappedModelTable()))) {
+            $column = str_replace(strtolower($factory->getMappedModelTable()) . "_", "", $k);
+            $values[$factory->getModelTable()][strtolower($column)] = $v;
           }
         }
       }
       
       foreach ($factories as $factory) {
-        $model = $factory->createObjectFromDict($values[$factory->getModelTable()][$factory->getNullObject()->getPrimaryKey()], $values[$factory->getModelTable()]);
-        array_push($res[$factory->getModelTable()], $model);
+        $model = $factory->createObjectFromDict($values[$factory->getModelTable()][strtolower($factory->getNullObject()->getPrimaryKey())], $values[$factory->getModelTable()]);
+        $res[$factory->getModelTable()][] = $model;
       }
     }
     
     return $res;
   }
   
-  public function filter($options, $single = false) {
+  /**
+   * @param array $options
+   * @param bool $single
+   * @return array|AbstractModel|null
+   */
+  public function filter(array $options, bool $single = false) {
     // Check if we need to join and if so pass on to internal Function
-    if (array_key_exists('join', $options)) {
+    if (array_key_exists(Factory::JOIN, $options)) {
       return $this->filterWithJoin($options);
     }
     
-    $keys = array_keys($this->getNullObject()->getKeyValueDict());
-    $query = "SELECT " . implode(", ", $keys) . " FROM " . $this->getModelTable();
+    $keys = self::getMappedModelKeys($this->getNullObject());
+    $query = "SELECT " . implode(", ", $keys) . " FROM " . $this->getMappedModelTable();
     $vals = array();
     
-    if (array_key_exists("filter", $options)) {
-      $query .= $this->applyFilters($vals, $options['filter']);
+    if (array_key_exists(Factory::FILTER, $options)) {
+      $query .= $this->applyFilters($vals, $options[Factory::FILTER]);
     }
     
-    if (array_key_exists("group", $options)) {
+    if (array_key_exists(Factory::GROUP, $options)) {
       $query .= $this->applyGroups($this->getGroups($options));
     }
     
-    if (!array_key_exists("order", $options)) {
+    if (!array_key_exists(Factory::ORDER, $options)) {
       // Add a asc order on the primary keys as a standard
       $oF = new OrderFilter($this->getNullObject()->getPrimaryKey(), "ASC");
       $orderOptions = array($oF);
-      $options['order'] = $orderOptions;
+      $options[Factory::ORDER] = $orderOptions;
     }
-    $query .= $this->applyOrder($options['order']);
+    $query .= $this->applyOrder($options[Factory::ORDER]);
+    
+    if (array_key_exists(Factory::LIMIT, $options)) {
+      $query .= $this->applyLimit($options[Factory::LIMIT]);
+    }
     
     $dbh = self::getDB();
     $stmt = $dbh->prepare($query);
@@ -669,9 +712,14 @@ abstract class AbstractModelFactory {
     while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
       $pkName = $this->getNullObject()->getPrimaryKey();
       
-      $pk = $row[$pkName];
+      if (isset($row[strtolower($pkName)])) {
+        $pk = $row[strtolower($pkName)];
+      }
+      else {
+        $pk = $row[$pkName];
+      }
       $model = $this->createObjectFromDict($pk, $row);
-      array_push($objects, $model);
+      $objects[] = $model;
     }
     
     if ($single) {
@@ -686,48 +734,81 @@ abstract class AbstractModelFactory {
     return $objects;
   }
   
-  private function applyFilters(&$vals, $filters) {
+  /**
+   * @param $vals
+   * @param $filters Filter|Filter[]
+   * @return string
+   */
+  private function applyFilters(&$vals, Filter|array $filters, bool $isJoinFilter = false): string {
     $parts = array();
     if (!is_array($filters)) {
       $filters = array($filters);
     }
     
     foreach ($filters as $filter) {
-      $parts[] = $filter->getQueryString();
+      $parts[] = $filter->getQueryString($this, true);
       if (!$filter->getHasValue()) {
         continue;
       }
       $v = $filter->getValue();
       if (is_array($v)) {
         foreach ($v as $val) {
-          array_push($vals, $val);
+          $vals[] = $val;
         }
       }
       else {
-        array_push($vals, $v);
+        $vals[] = $v;
       }
+    }
+    if ($isJoinFilter) {
+      return " AND " . implode(" AND ", $parts);
     }
     return " WHERE " . implode(" AND ", $parts);
   }
   
-  private function applyOrder($orders) {
+  /**
+   * @param $orders Order|Order[]
+   * @return string
+   */
+  private function applyOrder(Order|array $orders): string {
     $orderQueries = array();
     if (!is_array($orders)) {
       $orders = array($orders);
     }
     foreach ($orders as $order) {
-      $orderQueries[] = $order->getQueryString($this->getModelTable());
+      $orderQueries[] = $order->getQueryString($this, true);
     }
     return " ORDER BY " . implode(", ", $orderQueries);
   }
   
-  private function applyGroups($groups) {
+  private function applyJoins($joins): string {
+    $query = "";
+    foreach ($joins as $join) {
+      $joinFactory = $join->getOtherFactory();
+      $localFactory = $this;
+      if ($join->getOverrideOwnFactory() != null) {
+        $localFactory = $join->getOverrideOwnFactory();
+      }
+      $match1 = self::getMappedModelKey($localFactory->getNullObject(), $join->getMatch1());
+      $match2 = self::getMappedModelKey($joinFactory->getNullObject(), $join->getMatch2());
+      $query .= " " . $join->getJoinType() . " JOIN " . $joinFactory->getMappedModelTable() . " ON " . $localFactory->getMappedModelTable() . "." . $match1 . "=" . $joinFactory->getMappedModelTable() . "." . $match2 . " ";
+    }
+    return $query;
+  }
+  
+  //applylimit is slightly different than the other apply functions, since you can only limit by a single value
+  //the $limit argument is a single object LimitFilter object instead of an array of objects.
+  private function applyLimit($limit): string {
+    return " LIMIT " . $limit->getQueryString($this);
+  }
+  
+  private function applyGroups($groups): string {
     $groupsQueries = array();
     if (!is_array($groups)) {
       $groups = array($groups);
     }
     foreach ($groups as $group) {
-      $groupsQueries[] = $group->getQueryString($this->getModelTable());
+      $groupsQueries[] = $group->getQueryString($this, true);
     }
     return " GROUP BY " . implode(", ", $groupsQueries);
   }
@@ -740,9 +821,9 @@ abstract class AbstractModelFactory {
    * @param $model AbstractModel
    * @return bool
    */
-  public function delete($model) {
+  public function delete($model): bool {
     if ($model != null) {
-      $query = "DELETE FROM " . $this->getModelTable() . " WHERE " . $model->getPrimaryKey() . " = ?";
+      $query = "DELETE FROM " . $this->getMappedModelTable() . " WHERE " . $model->getPrimaryKey() . " = ?";
       $stmt = $this->getDB()->prepare($query);
       return $stmt->execute(array(
           $model->getPrimaryKeyValue()
@@ -756,12 +837,12 @@ abstract class AbstractModelFactory {
    * @param $options array
    * @return PDOStatement
    */
-  public function massDeletion($options) {
-    $query = "DELETE FROM " . $this->getModelTable();
+  public function massDeletion(array $options): PDOStatement {
+    $query = "DELETE FROM " . $this->getMappedModelTable();
     
     $vals = array();
     
-    if (array_key_exists("filter", $options)) {
+    if (array_key_exists(Factory::FILTER, $options)) {
       $query .= $this->applyFilters($vals, $this->getFilters($options));
     }
     
@@ -777,44 +858,51 @@ abstract class AbstractModelFactory {
    * @param $updates MassUpdateSet[]
    * @return null
    */
-  public function massSingleUpdate($matchingColumn, $updateColumn, $updates) {
-    $query = "UPDATE " . $this->getModelName();
+  public function massSingleUpdate($matchingColumn, $updateColumn, array $updates) {
+    $query = "UPDATE " . $this->getMappedModelTable();
     
     if (sizeof($updates) == 0) {
       return null;
     }
-    $query .= " SET `$updateColumn` = ( CASE ";
+    $query .= " SET " . self::getMappedModelKey($this->getNullObject(), $updateColumn) . " = ( CASE ";
     
     $vals = array();
     
     foreach ($updates as $update) {
-      $query .= $update->getMassQuery($matchingColumn);
-      array_push($vals, $update->getMatchValue());
-      array_push($vals, $update->getUpdateValue());
+      $query .= $update->getMassQuery(self::getMappedModelKey($this->getNullObject(), $matchingColumn));
+      $vals[] = $update->getMatchValue();
+      $vals[] = $update->getUpdateValue();
     }
     
     $matchingArr = array();
     foreach ($updates as $update) {
-      array_push($vals, $update->getMatchValue());
+      $vals[] = $update->getMatchValue();
       $matchingArr[] = "?";
     }
     
-    $query .= "END) WHERE $matchingColumn IN (" . implode(",", $matchingArr) . ")";
+    // this covers the specific case when integer values are updated and the db system does not know what type the case statements would have
+    // mysql does not really care, but postgres does
+    // the trick we use here works for both systems (as opposed to cast it to int/bigint in postgres with ::bigint where we would need to branch based on the db)
+    if (is_int($updates[0]->getUpdateValue())) {
+      $query .= " ELSE 2147483648 "; // 32 bit int max + 1
+    }
+    
+    $query .= "END) WHERE " . self::getMappedModelKey($this->getNullObject(), $matchingColumn) . " IN (" . implode(",", $matchingArr) . ")";
     $dbh = self::getDB();
     $stmt = $dbh->prepare($query);
     return $stmt->execute($vals);
   }
   
-  public function massUpdate($options) {
-    $query = "UPDATE " . $this->getModelTable();
+  public function massUpdate($options): bool {
+    $query = "UPDATE " . $this->getMappedModelTable();
     
     $vals = array();
     
-    if (array_key_exists("update", $options)) {
+    if (array_key_exists(Factory::UPDATE, $options)) {
       $query = $query . " SET ";
       
       
-      $updateOptions = $options['update'];
+      $updateOptions = $options[Factory::UPDATE];
       if (!is_array($updateOptions)) {
         $updateOptions = array($updateOptions);
       }
@@ -822,19 +910,19 @@ abstract class AbstractModelFactory {
       
       for ($i = 0; $i < count($updateOptions); $i++) {
         $option = $updateOptions[$i];
-        array_push($vals, $option->getValue());
+        $vals[] = $option->getValue();
         
         if ($i != count($updateOptions) - 1) {
-          $query = $query . $option->getQuery() . " , ";
+          $query = $query . $option->getQuery($this) . " , ";
         }
         else {
-          $query = $query . $option->getQuery();
+          $query = $query . $option->getQuery($this);
         }
       }
     }
     
-    if (array_key_exists("filter", $options)) {
-      $query .= $this->applyFilters($vals, $options['filter']);
+    if (array_key_exists(Factory::FILTER, $options)) {
+      $query .= $this->applyFilters($vals, $options[Factory::FILTER]);
     }
     
     $dbh = self::getDB();
@@ -845,29 +933,47 @@ abstract class AbstractModelFactory {
   /**
    * Returns the DB connection if possible
    * @param bool $test
-   * @return PDO
+   * @return ?PDO
+   * @throws Exception
    */
-  public function getDB($test = false) {
-    if (!$test) {
-      $dsn = 'mysql:dbname=' . DBA_DB . ";host=" . DBA_SERVER . ";port=" . DBA_PORT;
-      $user = DBA_USER;
-      $password = DBA_PASS;
-    }
-    else {
-      global $CONN;
-      // The utf8mb4 is here to force php to connect with that encoding, so you can save emoji's or other non ascii chars (specifically, unicode characters outside of the BMP) into the database. 
-      // If you are running into issues with this line, we could make this configurable.
-      $dsn = 'mysql:dbname=' . $CONN['db'] . ";host=" . $CONN['server'] . ";port=" . $CONN['port'] . ";charset=utf8mb4";
-      $user = $CONN['user'];
-      $password = $CONN['pass'];
-    }
-    
+  public function getDB(bool $test = false, array $testProperties = []): ?PDO {
     if (self::$dbh !== null) {
       return self::$dbh;
     }
-    
     try {
-      self::$dbh = new PDO($dsn, $user, $password);
+      $dbUser = StartupConfig::getInstance()->getDatabaseUser();
+      $dbPass = StartupConfig::getInstance()->getDatabasePassword();
+      $dbType = StartupConfig::getInstance()->getDatabaseType();
+      $dbHost = StartupConfig::getInstance()->getDatabaseServer();
+      $dbPort = StartupConfig::getInstance()->getDatabasePort();
+      $dbDB = StartupConfig::getInstance()->getDatabaseDB();
+      if ($test && sizeof($testProperties) == 6) { // if the connection is being tested, take credentials from argument properties
+        $dbUser = $testProperties['user'];
+        $dbPass = $testProperties['pass'];
+        $dbType = $testProperties['type'];
+        $dbHost = $testProperties['server'];
+        $dbPort = $testProperties['port'];
+        $dbDB = $testProperties['db'];
+      }
+      
+      if ($dbType == 'mysql') {
+        // connect as mysql
+        $dsn = "mysql:dbname=$dbDB;host=$dbHost;port=$dbPort;charset=utf8mb4";
+        self::$dbh = new PDO($dsn, $dbUser, $dbPass);
+      }
+      else if ($dbType == 'postgres') {
+        // connect as postgres
+        $dsn = "pgsql:dbname=$dbDB;host=$dbHost;port=$dbPort;user=$dbUser;password=$dbPass";
+        self::$dbh = new PDO($dsn);
+      }
+      else {
+        // unknown type
+        if ($test) {
+          return null;
+        }
+        throw new Exception("Fatal Error: Unknown database type specified!");
+      }
+      
       self::$dbh->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
       return self::$dbh;
     }
@@ -875,8 +981,7 @@ abstract class AbstractModelFactory {
       if ($test) {
         return null;
       }
-      UI::printError(UI::ERROR, "Fatal Error! Database connection failed: " . $e->getMessage());
-      return null;
+      throw new Exception("Fatal Error! Database connection failed: " . $e->getMessage());
     }
   }
 }

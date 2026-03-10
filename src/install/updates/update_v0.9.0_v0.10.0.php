@@ -6,8 +6,7 @@ use DBA\QueryFilter;
 use DBA\AgentBinary;
 
 if (!isset($TEST)) {
-  require_once(dirname(__FILE__) . "/../../inc/confv2.php");
-  require_once(dirname(__FILE__) . "/../../inc/info.php");
+  require_once(dirname(__FILE__) . "/../../inc/StartupConfig.class.php");
   require_once(dirname(__FILE__) . "/../../dba/init.php");
   require_once(dirname(__FILE__) . "/../../inc/Util.class.php");
 }
@@ -72,13 +71,13 @@ if (!isset($PRESENT["v0.9.0_speed"])) {
 if (!isset($PRESENT["v0.9.0_agentBinaries"])) {
   Factory::getAgentFactory()->getDB()->query("ALTER TABLE `AgentBinary` ADD `updateAvailable` VARCHAR(20) NOT NULL");
   Factory::getAgentFactory()->getDB()->query("ALTER TABLE `AgentBinary` ADD `updateTrack`     VARCHAR(20) NOT NULL");
-  $qF = new QueryFilter(AgentBinary::TYPE, "python", "=");
+  $qF = new QueryFilter("type", "python", "=");
   $agent = Factory::getAgentBinaryFactory()->filter([Factory::FILTER => $qF], true);
   if ($agent != null) {
     $agent->setUpdateTrack('stable');
     Factory::getAgentBinaryFactory()->update($agent);
   }
   
-  Util::checkAgentVersion("python", "0.4.0", true);
+  Util::checkAgentVersionLegacy("python", "0.4.0", true);
   $EXECUTED["v0.9.0_agentBinaries"] = true;
 }

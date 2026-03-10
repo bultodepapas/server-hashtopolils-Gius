@@ -1,4 +1,5 @@
 <?php
+
 use DBA\Factory;
 use DBA\QueryFilter;
 use DBA\OrderFilter;
@@ -7,104 +8,101 @@ use DBA\Pretask;
 use DBA\Supertask;
 use DBA\SupertaskPretask;
 
+
+require_once __DIR__ . '/../common/ErrorHandler.class.php';
+
+use Psr\Http\Message\ServerRequestInterface as Request;
+
 require_once(dirname(__FILE__) . "/../common/AbstractModelAPI.class.php");
 
 
 class SupertaskAPI extends AbstractModelAPI {
-    public static function getBaseUri(): string {
-      return "/api/v2/ui/supertasks";
-    }
-
-    public static function getDBAclass(): string {
-      return Supertask::class;
-    }
-
-    public function getExpandables(): array {
-      return [ "pretasks" ];
-    }
-
-    protected function fetchExpandObjects(array $objects, string $expand): mixed {     
-      /* Ensure we receive the proper type */
-      array_walk($objects, function($obj) { assert($obj instanceof Supertask); });
-
-      /* Expand requested section */
-      switch($expand) {
-        case 'pretasks':
-          return $this->getManyToOneRelationViaIntermediate(
-            $objects,
-            Supertask::SUPERTASK_ID,
-            Factory::getSupertaskPretaskFactory(),
-            SupertaskPretask::SUPERTASK_ID,
-            Factory::getPretaskFactory(),
-            Pretask::PRETASK_ID
-          );
-        default:
-          throw new BadFunctionCallException("Internal error: Expansion '$expand' not implemented!");
+  public static function getBaseUri(): string {
+    return "/api/v2/ui/supertasks";
+  }
+  
+  public static function getDBAclass(): string {
+    return Supertask::class;
+  }
+  
+  public static function getToManyRelationships(): array {
+    return [
+      'pretasks' => [
+        'key' => Supertask::SUPERTASK_ID,
+        
+        'junctionTableType' => SupertaskPretask::class,
+        'junctionTableFilterField' => SupertaskPretask::SUPERTASK_ID,
+        'junctionTableJoinField' => SupertaskPretask::PRETASK_ID,
+        
+        'relationType' => Pretask::class,
+        'relationKey' => Pretask::PRETASK_ID,
+      ],
+    ];
+  }
+  
+  public function getFormFields(): array {
+    return [
+      "pretasks" => ['type' => 'array', 'subtype' => 'int']
+    ];
+  }
+  
+  protected function createObject(array $data): int {
+    /* Use quirk on 'pretasks' since this is casted to DB representation  */
+    $supertask = SupertaskUtils::createSupertask(
+      $data[Supertask::SUPERTASK_NAME],
+      $this->db2json($this->getFeatures()['pretasks'], $data["pretasks"])
+    );
+    return $supertask->getId();
+  }
+  
+  /**
+   * @throws HttpError
+   * @throws HTException
+   */
+  public function updateToManyRelationship(Request $request, array $data, array $args): void {
+    $id = $args['id'];
+    $wantedPretasks = [];
+    foreach ($data as $pretask) {
+      if (!$this->validateResourceRecord($pretask)) {
+        $encoded_pretask = json_encode($pretask);
+        throw new HttpError('Invalid resource record given in list! invalid resource record: ' . $encoded_pretask);
       }
-    }    
-
-    public function getFormFields(): array {
-      return  [
-        "pretasks" => ['type' => 'array', 'subtype' => 'int']
-      ];
+      array_push($wantedPretasks, self::getPretask($pretask["id"]));
     }
-
-    protected function createObject(array $data): int {
-      /* Use quirk on 'pretasks' since this is casted to DB representation  */
-      SupertaskUtils::createSupertask(
-        $data[Supertask::SUPERTASK_NAME],
-        $this->db2json($this->getFeatures()['pretasks'], $data["pretasks"])
-      );
-
-      /* On succesfully insert, return ID */
-      $qFs = [
-        new QueryFilter(Supertask::SUPERTASK_NAME, $data[Supertask::SUPERTASK_NAME], '=')
-      ];
-
-      /* Hackish way to retreive object since Id is not returned on creation */
-      $oF = new OrderFilter(Supertask::SUPERTASK_ID, "DESC");
-      $objects = $this->getFactory()->filter([Factory::FILTER => $qFs, Factory::ORDER => $oF]);
-      /* No unique properties set on columns, thus multiple entries could exists, pick the latest (DESC ordering used) */
-      assert(count($objects) >= 1);
-
-      return $objects[0]->getId();      
+    
+    // Find out which to add and remove
+    $currentPretasks = SupertaskUtils::getPretasksOfSupertask($id);
+    $compare_ids = static function($a, $b) {
+      return ($a->getId() - $b->getId());
+    };
+    
+    $toAddPretasks = array_udiff($wantedPretasks, $currentPretasks, $compare_ids);
+    $toRemovePretasks = array_udiff($currentPretasks, $wantedPretasks, $compare_ids);
+    
+    $factory = $this->getFactory();
+    $factory->getDB()->beginTransaction(); //start transaction to be able roll back
+    
+    // Update models
+    foreach ($toAddPretasks as $pretask) {
+      SupertaskUtils::addPretaskToSupertask($id, $pretask->getId());
     }
-
-    public function updateObject(object $object, $data,  $processed = []): void {
-      $key = "pretasks";
-      if (array_key_exists($key, $data)) {
-        array_push($processed, $key);
-
-        // Retrieve requested pretasks
-        $wantedPretasks = [];
-        foreach(self::db2json($this->getAliasedFeatures()['pretasks'], $data[$key]) as $pretaskId) {
-          array_push($wantedPretasks, self::getPretask($pretaskId));
-        }
-
-        // Find out which to add and remove
-        $currentPretasks = SupertaskUtils::getPretasksOfSupertask($object->getId());
-        function compare_ids($a, $b) 
-        { 
-          return ($a->getId() - $b->getId()); 
-        }
-        $toAddPretasks = array_udiff($wantedPretasks, $currentPretasks, 'compare_ids');
-        $toRemovePretasks = array_udiff($currentPretasks, $wantedPretasks, 'compare_ids');
-
-        // Update model
-        foreach($toAddPretasks as $pretask) {
-          SupertaskUtils::addPretaskToSupertask($object->getId(), $pretask->getId());
-        }
-        foreach($toRemovePretasks as $pretask) {
-          SupertaskUtils::removePretaskFromSupertask($object->getId(), $pretask->getId());
-        }
-      }
-
-      parent::updateObject($object, $data, $processed);
+    foreach ($toRemovePretasks as $pretask) {
+      SupertaskUtils::removePretaskFromSupertask($id, $pretask->getId());
     }
-
-    protected function deleteObject(object $object): void {
-      SupertaskUtils::deleteSupertask($object->getId());
+    
+    if (!$factory->getDB()->commit()) {
+      throw new HttpError("Was not able to update to many relationship");
     }
+  }
+  
+  /**
+   * @throws HTException
+   */
+  protected function deleteObject(object $object): void {
+    SupertaskUtils::deleteSupertask($object->getId());
+  }
 }
 
+use Slim\App;
+/** @var App $app */
 SupertaskAPI::register($app);

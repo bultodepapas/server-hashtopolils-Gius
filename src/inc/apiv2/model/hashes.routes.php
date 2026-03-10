@@ -1,69 +1,80 @@
 <?php
+
+use DBA\ContainFilter;
 use DBA\Factory;
 
 use DBA\Chunk;
 use DBA\Hash;
 use DBA\Hashlist;
+use DBA\JoinFilter;
+use DBA\User;
 
 require_once(dirname(__FILE__) . "/../common/AbstractModelAPI.class.php");
 
 
 class HashAPI extends AbstractModelAPI {
-    public static function getBaseUri(): string {
-      return "/api/v2/ui/hashes";
-    }
-
-    public static function getAvailableMethods(): array {
-      return ['GET'];
-    }
-
-    public static function getDBAclass(): string {
-      return Hash::class;
-    }   
-
-    public function getExpandables(): array {
-      return ["hashlist", "chunk"];
-    }
-
-    protected function fetchExpandObjects(array $objects, string $expand): mixed {     
-      /* Ensure we receive the proper type */
-      array_walk($objects, function($obj) { assert($obj instanceof Hash); });
-
-      /* Expand requested section */
-      switch($expand) {
-        case 'hashlist':
-          return $this->getForeignKeyRelation(
-            $objects,
-            Hash::HASHLIST_ID,
-            Factory::getHashListFactory(),
-            HashList::HASHLIST_ID
-          );
-        case 'chunk':
-          return $this->getForeignKeyRelation(
-            $objects,
-            Hash::CHUNK_ID,
-            Factory::getChunkFactory(),
-            Chunk::CHUNK_ID
-          );
-        default:
-          throw new BadFunctionCallException("Internal error: Expansion '$expand' not implemented!");
-      }
-    }
-
-    protected function createObject(array $data): int {
-      /* Dummy code to implement abstract functions */
-      assert(False, "Hashes cannot be created via API");
-      return -1;
-    }
-
-    public function updateObject(object $object, array $data, array $processed = []): void {
-       assert(False, "Hashes cannot be updated via API");
-    }
-
-    protected function deleteObject(object $object): void {
-      /* Dummy code to implement abstract functions */
-      assert(False, "Hashes cannot be deleted via API");
-    }
+  public static function getBaseUri(): string {
+    return "/api/v2/ui/hashes";
+  }
+  
+  public static function getAvailableMethods(): array {
+    return ['GET'];
+  }
+  
+  public static function getDBAclass(): string {
+    return Hash::class;
+  }
+  
+  protected function getSingleACL(User $user, object $object): bool {
+    $accessGroupsUser = Util::arrayOfIds(AccessUtils::getAccessGroupsOfUser($user));
+    $hashlist = Factory::getHashlistFactory()->get($object->getHashlistId());
+    
+    return in_array($hashlist->getAccessGroupId(), $accessGroupsUser);
+  }
+  
+  protected function getFilterACL(): array {
+    $accessGroups = Util::arrayOfIds(AccessUtils::getAccessGroupsOfUser($this->getCurrentUser()));
+    
+    return [
+      Factory::JOIN => [
+        new JoinFilter(Factory::getHashlistFactory(), Hash::HASHLIST_ID, Hashlist::HASHLIST_ID),
+      ],
+      Factory::FILTER => [
+        new ContainFilter(Hashlist::ACCESS_GROUP_ID, $accessGroups, Factory::getHashlistFactory()),
+      ]
+    ];
+  }
+  
+  public static function getToOneRelationships(): array {
+    return [
+      'chunk' => [
+        'key' => Hash::CHUNK_ID,
+        
+        'relationType' => Chunk::class,
+        'relationKey' => Chunk::CHUNK_ID,
+      ],
+      'hashlist' => [
+        'key' => Hash::HASHLIST_ID,
+        
+        'relationType' => Hashlist::class,
+        'relationKey' => Hashlist::HASHLIST_ID,
+      ],
+    ];
+  }
+  
+  protected function createObject(array $data): int {
+    throw new HttpError("Hashes cannot be created via API");
+  }
+  
+  public function updateObject(int $objectId, array $data): void {
+    throw new HttpError("Hashes cannot be updated via API");
+  }
+  
+  protected function deleteObject(object $object): void {
+    throw new HttpError("Hashes cannot be deleted via API");
+  }
 }
 
+use Slim\App;
+/** @var App $app */
 HashAPI::register($app);

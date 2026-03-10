@@ -1,5 +1,4 @@
 <?php
-use DBA\Factory;
 
 use DBA\AccessGroup;
 use DBA\AccessGroupAgent;
@@ -11,55 +10,61 @@ require_once(dirname(__FILE__) . "/../common/AbstractModelAPI.class.php");
 
 
 class AccessGroupAPI extends AbstractModelAPI {
-    public static function getBaseUri(): string {
-      return "/api/v2/ui/accessgroups";
-    }
-
-    public static function getDBAclass(): string {
-      return AccessGroup::class;
-    }
-
-    public function getExpandables(): array {
-      return ["userMembers", "agentMembers"];
-    }
-
-    protected function fetchExpandObjects(array $objects, string $expand): mixed {     
-      /* Ensure we receive the proper type */
-      array_walk($objects, function($obj) { assert($obj instanceof AccessGroup); });
-
-      /* Expand requested section */
-      switch($expand) {
-        case 'userMembers':
-          return $this->getManyToOneRelationViaIntermediate(
-            $objects,
-            AccessGroup::ACCESS_GROUP_ID,
-            Factory::getAccessGroupUserFactory(),
-            AccessGroupUser::ACCESS_GROUP_ID,
-            Factory::getUserFactory(),
-            User::USER_ID
-          );
-        case 'agentMembers':
-          return $this->getManyToOneRelationViaIntermediate(
-            $objects,
-            AccessGroup::ACCESS_GROUP_ID,
-            Factory::getAccessGroupAgentFactory(),
-            AccessGroupAgent::ACCESS_GROUP_ID,
-            Factory::getAgentFactory(),
-            Agent::AGENT_ID
-          );
-        default:
-          throw new BadFunctionCallException("Internal error: Expansion '$expand' not implemented!");
-      }
-    }
-
-    protected function createObject(array $data): int {
-      $object = AccessGroupUtils::createGroup($data[AccessGroup::GROUP_NAME]);
-      return $object->getId();
-    }
-
-    protected function deleteObject(object $object): void {
-      AccessGroupUtils::deleteGroup($object->getId());
-    }
+  public static function getBaseUri(): string {
+    return "/api/v2/ui/accessgroups";
+  }
+  
+  public static function getDBAclass(): string {
+    return AccessGroup::class;
+  }
+  
+  public static function getToManyRelationships(): array {
+    return [
+      'userMembers' => [
+        'key' => AccessGroup::ACCESS_GROUP_ID,
+        
+        'junctionTableType' => AccessGroupUser::class,
+        'junctionTableFilterField' => AccessGroupUser::ACCESS_GROUP_ID,
+        'junctionTableJoinField' => AccessGroupUser::USER_ID,
+        
+        'relationType' => User::class,
+        'relationKey' => User::USER_ID,
+      ],
+      'agentMembers' => [
+        'key' => AccessGroup::ACCESS_GROUP_ID,
+        
+        'junctionTableType' => AccessGroupAgent::class,
+        'junctionTableFilterField' => AccessGroupAgent::ACCESS_GROUP_ID,
+        'junctionTableJoinField' => AccessGroupAgent::AGENT_ID,
+        
+        'relationType' => Agent::class,
+        'relationKey' => Agent::AGENT_ID,
+      ],
+    ];
+  }
+  
+  protected function getUpdateHandlers($id, $current_user): array {
+    return [
+      AccessGroup::GROUP_NAME => fn($value) => AccessGroupUtils::rename($id, $value),
+    ];
+  }
+  
+  /**
+   * @throws HTException
+   */
+  protected function createObject(array $data): int {
+    $object = AccessGroupUtils::createGroup($data[AccessGroup::GROUP_NAME]);
+    return $object->getId();
+  }
+  
+  /**
+   * @throws HTException
+   */
+  protected function deleteObject(object $object): void {
+    AccessGroupUtils::deleteGroup($object->getId());
+  }
 }
 
+use Slim\App;
+/** @var App $app */
 AccessGroupAPI::register($app);

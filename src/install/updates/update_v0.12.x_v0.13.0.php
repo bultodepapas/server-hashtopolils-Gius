@@ -4,8 +4,7 @@ use DBA\Factory;
 use DBA\HashType;
 
 if (!isset($TEST)) {
-  require_once(dirname(__FILE__) . "/../../inc/confv2.php");
-  require_once(dirname(__FILE__) . "/../../inc/info.php");
+  require_once(dirname(__FILE__) . "/../../inc/StartupConfig.class.php");
   require_once(dirname(__FILE__) . "/../../dba/init.php");
   require_once(dirname(__FILE__) . "/../../inc/Util.class.php");
 }
@@ -252,12 +251,12 @@ if (!isset($PRESENT["v0.12.x_hashTypes_5"])) {
 }
 
 if (!isset($PRESENT["v0.12.x_agentBinaries"])) {
-  Util::checkAgentVersion("python", "0.6.0.10", true);
+  Util::checkAgentVersionLegacy("python", "0.6.0.10", true);
   $EXECUTED["v0.12.x_agentBinaries"] = true;
 }
 
 if (!isset($PRESENT["v0.12.x_agentBinaries_1"])) {
-  Util::checkAgentVersion("python", "0.7.0", true);
+  Util::checkAgentVersionLegacy("python", "0.7.0", true);
   $EXECUTED["v0.12.x_agentBinaries_1"] = true;
 }
 

@@ -1,7 +1,7 @@
 <?php
-use DBA\Factory;
 
 use DBA\CrackerBinary;
+use DBA\HashType;
 use DBA\HealthCheck;
 use DBA\HealthCheckAgent;
 
@@ -9,56 +9,64 @@ require_once(dirname(__FILE__) . "/../common/AbstractModelAPI.class.php");
 
 
 class HealthCheckAPI extends AbstractModelAPI {
-    public static function getBaseUri(): string {
-      return "/api/v2/ui/healthchecks";
-    }
- 
-    public static function getDBAclass(): string {
-      return HealthCheck::class;
-    }
-
-    public function getExpandables(): array {
-      return ['crackerBinary', 'healthCheckAgents'];
-    }
- 
-    protected function fetchExpandObjects(array $objects, string $expand): mixed {     
-      /* Ensure we receive the proper type */
-      array_walk($objects, function($obj) { assert($obj instanceof HealthCheck); });
-
-      /* Expand requested section */
-      switch($expand) {
-        case 'crackerBinary':
-          return $this->getForeignKeyRelation(
-            $objects,
-            HealthCheck::CRACKER_BINARY_ID,
-            Factory::getCrackerBinaryFactory(),
-            CrackerBinary::CRACKER_BINARY_ID
-          );
-        case 'healthCheckAgents':
-          return $this->getManyToOneRelation(
-            $objects,
-            HealthCheck::HEALTH_CHECK_ID,
-            Factory::getHealthCheckAgentFactory(),
-            HealthCheckAgent::HEALTH_CHECK_ID
-          );
-        default:
-          throw new BadFunctionCallException("Internal error: Expansion '$expand' not implemented!");
-      }
-    }
+  public static function getBaseUri(): string {
+    return "/api/v2/ui/healthchecks";
+  }
+  
+  public static function getDBAclass(): string {
+    return HealthCheck::class;
+  }
+  
+  
+  public static function getToOneRelationships(): array {
+    return [
+      'crackerBinary' => [
+        'key' => HealthCheck::CRACKER_BINARY_ID,
+        
+        'relationType' => CrackerBinary::class,
+        'relationKey' => CrackerBinary::CRACKER_BINARY_ID,
+      ],
+      'hashType' => [
+        'key' => HealthCheck::HASHTYPE_ID,
+        
+        'relationType' => HashType::class,
+        'relationKey' => HashType::HASH_TYPE_ID,
+      ]
+    ];
+  }
+  
+  public static function getToManyRelationships(): array {
+    return [
+      'healthCheckAgents' => [
+        'key' => HealthCheck::HEALTH_CHECK_ID,
+        
+        'relationType' => HealthCheckAgent::class,
+        'relationKey' => HealthCheckAgent::HEALTH_CHECK_ID,
+      ],
+    ];
+  }
+  
+  /**
+   * @throws HttpError
+   */
+  protected function createObject(array $data): int {
+    $healthCheck = HealthUtils::createHealthCheck(
+      $data[HealthCheck::HASHTYPE_ID],
+      $data[HealthCheck::CHECK_TYPE],
+      $data[HealthCheck::CRACKER_BINARY_ID]
+    );
     
-    protected function createObject(array $data): int {
-      $obj = HealthUtils::createHealthCheck(
-        $data[HealthCheck::HASHTYPE_ID],
-        $data[HealthCheck::CHECK_TYPE],
-        $data[HealthCheck::CRACKER_BINARY_ID]
-      );
-
-      return $obj->getId();
-    }
-
-    protected function deleteObject(object $object): void {
-      HealthUtils::deleteHealthCheck($object->getId());
-    }
+    return $healthCheck->getId();
+  }
+  
+  /**
+   * @throws HTException
+   */
+  protected function deleteObject(object $object): void {
+    HealthUtils::deleteHealthCheck($object->getId());
+  }
 }
 
+use Slim\App;
+/** @var App $app */
 HealthCheckAPI::register($app);

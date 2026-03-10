@@ -49,7 +49,7 @@ class UserAPIHashlist extends UserAPIBasic {
           $this->sendErrorResponse($QUERY[UQuery::SECTION], "INV", "Invalid section request!");
       }
     }
-    catch (HTException $e) {
+    catch (Exception $e) {
       $this->sendErrorResponse($QUERY[UQueryTask::SECTION], $QUERY[UQueryTask::REQUEST], $e->getMessage());
     }
   }
@@ -182,7 +182,8 @@ class UserAPIHashlist extends UserAPIBasic {
       'paste',
       ['hashfield' => base64_decode($QUERY[UQueryHashlist::HASHLIST_DATA])],
       [],
-      $this->user
+      $this->user,
+      false
     );
     $response = [
       UResponseHashlist::SECTION => $QUERY[UQueryHashlist::SECTION],

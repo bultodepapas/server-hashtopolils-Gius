@@ -1,5 +1,6 @@
 <?php
 
+use DBA\Aggregation;
 use DBA\AbstractModel;
 use DBA\AccessGroup;
 use DBA\AccessGroupUser;
@@ -25,7 +26,9 @@ use DBA\AgentBinary;
 use DBA\AgentStat;
 use DBA\FileDelete;
 use DBA\Factory;
+use DBA\UpdateSet;
 use DBA\Speed;
+use Composer\Semver\Comparator;
 
 /**
  *
@@ -185,15 +188,61 @@ class Util {
   }
   
   /**
+   * function to check agent version for older update scripts, that still has
+   * the 'type' field in AgentBinary instead of 'binaryType'
+   */
+  public static function checkAgentVersionLegacy($type, $version, $silent = false) {
+    $agentBinaryFactory = Factory::getAgentBinaryFactory();
+    $dict = $agentBinaryFactory->getNullObject()->getKeyValueDict();
+    unset($dict["binaryType"]);
+    $dict["type"] = null;
+    $keys = array_keys($dict);
+    
+    $query = "SELECT " . implode(", ", $keys) . " FROM " . $agentBinaryFactory->getModelTable();
+    $query .= " WHERE type=?";
+    $dbh = $agentBinaryFactory->getDB();
+    $stmt = $dbh->prepare($query);
+    $vals = [$type];
+    $stmt->execute($vals);
+
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if($row != null) {
+      $pkName = $agentBinaryFactory->getNullObject()->getPrimaryKey();
+      $pk = $row[$pkName];
+      $row["binaryType"] = $row["type"];
+      $binary = $agentBinaryFactory->createObjectFromDict($pk, $row);
+
+      if (Comparator::lessThan($binary->getVersion(), $version)) {
+        if (!$silent) {
+          echo "update $type version... ";
+        }
+
+        $query = "UPDATE " . $agentBinaryFactory->getModelTable() . " SET " . AgentBinary::VERSION . "=?";
+        
+        $values = [];
+        $query = $query . " WHERE " . $binary->getPrimaryKey() . "=?";
+        $values[] = $version;
+        $values[] = $binary->getPrimaryKeyValue();
+        
+        $stmt = $dbh->prepare($query);
+        $stmt->execute($values);
+        if (!$silent) {
+          echo "OK";
+        }
+      }
+    }
+  }
+
+  /**
    * @param string $type
    * @param string $version
    * @param bool $silent
    */
   public static function checkAgentVersion($type, $version, $silent = false) {
-    $qF = new QueryFilter(AgentBinary::TYPE, $type, "=");
+    $qF = new QueryFilter(AgentBinary::BINARY_TYPE, $type, "=");
     $binary = Factory::getAgentBinaryFactory()->filter([Factory::FILTER => $qF], true);
     if ($binary != null) {
-      if (Util::versionComparison($binary->getVersion(), $version) == 1) {
+      if (Comparator::lessThan($binary->getVersion(), $version)) {
         if (!$silent) {
           echo "update $type version... ";
         }
@@ -377,33 +426,33 @@ class Util {
    * @return array
    */
   public static function getTaskInfo($task) {
-    $qF = new QueryFilter(Chunk::TASK_ID, $task->getId(), "=");
-    $chunks = Factory::getChunkFactory()->filter([Factory::FILTER => $qF]);
-    $progress = 0;
-    $cracked = 0;
-    $maxTime = 0;
-    $totalTimeSpent = 0;
-    $speed = 0;
-    foreach ($chunks as $chunk) {
-      if ($chunk->getDispatchTime() > 0 && $chunk->getSolveTime() > 0) {
-        $totalTimeSpent += $chunk->getSolveTime() - $chunk->getDispatchTime();
-      }
-      $progress += $chunk->getCheckpoint() - $chunk->getSkip();
-      $cracked += $chunk->getCracked();
-      if ($chunk->getDispatchTime() > $maxTime) {
-        $maxTime = $chunk->getDispatchTime();
-      }
-      if ($chunk->getSolveTime() > $maxTime) {
-        $maxTime = $chunk->getSolveTime();
-      }
-      $speed += $chunk->getSpeed();
-    }
+    $qF1 = new QueryFilter(Chunk::TASK_ID, $task->getId(), "=");
+    
+    $agg1 = new Aggregation(Chunk::CHECKPOINT, Aggregation::SUM);
+    $agg2 = new Aggregation(Chunk::SKIP, Aggregation::SUM);
+    $agg3 = new Aggregation(Chunk::CRACKED, Aggregation::SUM);
+    $agg4 = new Aggregation(Chunk::SPEED, Aggregation::SUM);
+    $agg5 = new Aggregation(Chunk::DISPATCH_TIME, Aggregation::MAX);
+    $agg6 = new Aggregation(Chunk::SOLVE_TIME, Aggregation::MAX);
+    $agg7 = new Aggregation(Chunk::CHUNK_ID, Aggregation::COUNT);
+    $agg8 = new Aggregation(Chunk::SOLVE_TIME, Aggregation::SUM);
+    $agg9 = new Aggregation(Chunk::DISPATCH_TIME, Aggregation::SUM);
+    
+    $results = Factory::getChunkFactory()->multicolAggregationFilter([Factory::FILTER => $qF1], [$agg1, $agg2, $agg3, $agg4, $agg5, $agg6, $agg7, $agg8, $agg9]);
+    
+    $totalTimeSpent = $results[$agg8->getName()] - $results[$agg9->getName()];
+    
+    $progress = $results[$agg1->getName()] - $results[$agg2->getName()];
+    $cracked = $results[$agg3->getName()];
+    $speed = $results[$agg4->getName()];
+    $maxTime = max($results[$agg5->getName()], $results[$agg6->getName()]);
+    $numChunks = $results[$agg7->getName()];
     
     $isActive = false;
     if (time() - $maxTime < SConfig::getInstance()->getVal(DConfig::CHUNK_TIMEOUT) && ($progress < $task->getKeyspace() || $task->getUsePreprocessor() && $task->getKeyspace() == DPrince::PRINCE_KEYSPACE)) {
       $isActive = true;
     }
-    return array($progress, $cracked, $isActive, sizeof($chunks), ($totalTimeSpent > 0) ? round($cracked * 60 / $totalTimeSpent, 2) : 0, $speed);
+    return array($progress, $cracked, $isActive, $numChunks, ($totalTimeSpent > 0) ? round($cracked * 60 / $totalTimeSpent, 2) : 0, $speed);
   }
   
   /**
@@ -438,8 +487,12 @@ class Util {
    */
   public static function getChunkInfo($task) {
     $qF = new QueryFilter(Chunk::TASK_ID, $task->getId(), "=");
-    $cracked = Factory::getChunkFactory()->sumFilter([Factory::FILTER => $qF], Chunk::CRACKED);
-    $numChunks = Factory::getChunkFactory()->countFilter([Factory::FILTER => $qF]);
+    $agg1 = new Aggregation(Chunk::CRACKED, "SUM");
+    $agg2 = new Aggregation(Chunk::CHUNK_ID, "COUNT");
+    $results = Factory::getChunkFactory()->multicolAggregationFilter([Factory::FILTER => $qF], [$agg1, $agg2]);
+    
+    $cracked = $results[$agg1->getName()];
+    $numChunks = $results[$agg2->getName()];
     
     $qF = new QueryFilter(Assignment::TASK_ID, $task->getId(), "=");
     $numAssignments = Factory::getAssignmentFactory()->countFilter([Factory::FILTER => $qF]);
@@ -568,6 +621,21 @@ class Util {
     }
     return true;
   }
+
+  public static function cleaning() {
+    $entry = Factory::getStoredValueFactory()->get(DCleaning::LAST_CLEANING);
+    if ($entry == null) {
+      $entry = new StoredValue(DCleaning::LAST_CLEANING, 0);
+      Factory::getStoredValueFactory()->save($entry);
+    }
+    $time = time();
+    if ($time - $entry->getVal() > 600) {
+      self::agentStatCleaning();
+      self::zapCleaning();
+      self::tusFileCleaning();
+      Factory::getStoredValueFactory()->set($entry, StoredValue::VAL, $time);
+    }
+  }
   
   /**
    * Checks if it is longer than 10 mins since the last time it was checked if there are
@@ -575,45 +643,69 @@ class Util {
    * and old entries are deleted.
    */
   public static function agentStatCleaning() {
-    $entry = Factory::getStoredValueFactory()->get(DStats::LAST_STAT_CLEANING);
-    if ($entry == null) {
-      $entry = new StoredValue(DStats::LAST_STAT_CLEANING, 0);
-      Factory::getStoredValueFactory()->save($entry);
+    $lifetime = intval(SConfig::getInstance()->getVal(DConfig::AGENT_DATA_LIFETIME));
+    if ($lifetime <= 0) {
+      $lifetime = 3600;
     }
-    if (time() - $entry->getVal() > 600) {
-      $lifetime = intval(SConfig::getInstance()->getVal(DConfig::AGENT_DATA_LIFETIME));
-      if ($lifetime <= 0) {
-        $lifetime = 3600;
-      }
-      $qF = new QueryFilter(AgentStat::TIME, time() - $lifetime, "<=");
-      Factory::getAgentStatFactory()->massDeletion([Factory::FILTER => $qF]);
-      
-      Factory::getStoredValueFactory()->set($entry, StoredValue::VAL, time());
-    }
+    $qF = new QueryFilter(AgentStat::TIME, time() - $lifetime, "<=");
+    Factory::getAgentStatFactory()->massDeletion([Factory::FILTER => $qF]);
+    
+    $qF = new QueryFilter(Speed::TIME, time() - $lifetime, "<=");
+    Factory::getSpeedFactory()->massDeletion([Factory::FILTER => $qF]);
+    
   }
   
   /**
    * Used by the solver. Cleans the zap-queue
    */
   public static function zapCleaning() {
-    $entry = Factory::getStoredValueFactory()->get(DZaps::LAST_ZAP_CLEANING);
-    if ($entry == null) {
-      $entry = new StoredValue(DZaps::LAST_ZAP_CLEANING, 0);
-      Factory::getStoredValueFactory()->save($entry);
-    }
-    if (time() - $entry->getVal() > 600) {
-      $zapFilter = new QueryFilter(Zap::SOLVE_TIME, time() - 600, "<=");
-      
-      // delete dependencies on AgentZap
-      $zaps = Factory::getZapFactory()->filter([Factory::FILTER => $zapFilter]);
-      $zapIds = Util::arrayOfIds($zaps);
-      $uS = new UpdateSet(AgentZap::LAST_ZAP_ID, null);
-      $qF = new ContainFilter(AgentZap::LAST_ZAP_ID, $zapIds);
-      Factory::getAgentZapFactory()->massUpdate([Factory::FILTER => $qF, Factory::UPDATE => $uS]);
-      
-      Factory::getZapFactory()->massDeletion([Factory::FILTER => $zapFilter]);
-      
-      Factory::getStoredValueFactory()->set($entry, StoredValue::VAL, time());
+    $zapFilter = new QueryFilter(Zap::SOLVE_TIME, time() - 600, "<=");
+    
+    // delete dependencies on AgentZap
+    $zaps = Factory::getZapFactory()->filter([Factory::FILTER => $zapFilter]);
+    $zapIds = Util::arrayOfIds($zaps);
+    $uS = new UpdateSet(AgentZap::LAST_ZAP_ID, null);
+    $qF = new ContainFilter(AgentZap::LAST_ZAP_ID, $zapIds);
+    Factory::getAgentZapFactory()->massUpdate([Factory::FILTER => $qF, Factory::UPDATE => $uS]);
+    
+    Factory::getZapFactory()->massDeletion([Factory::FILTER => $zapFilter]);
+  }
+
+  /**
+   * Cleans up stale TUS upload files.
+   *
+   * This method scans the TUS metadata directory for .meta files, reads their
+   * metadata to determine upload expiration, and removes expired metadata files
+   * together with their corresponding upload (.part) files. It performs file
+   * system operations and may delete files on disk.
+   */
+  public static function tusFileCleaning() {
+    $tusDirectory = Factory::getStoredValueFactory()->get(DDirectories::TUS)->getVal();
+    $uploadDirectory = $tusDirectory . DIRECTORY_SEPARATOR . "uploads" . DIRECTORY_SEPARATOR;
+    $metaDirectory = $tusDirectory .  DIRECTORY_SEPARATOR . "meta" . DIRECTORY_SEPARATOR;
+    $expiration_time = time() + 3600;
+    if (file_exists($metaDirectory) && is_dir($metaDirectory)) {
+      if ($metaDirectoryHandler = opendir($metaDirectory)){
+        while ($file = readdir($metaDirectoryHandler)) {
+          if (str_ends_with($file, ".meta")) {
+            $metaFile = $metaDirectory . $file;
+            $metadata = (array)json_decode(file_get_contents($metaFile), true) ;
+            if (!isset($metadata['upload_expires'])) {
+              continue;
+            }
+            if ($metadata['upload_expires'] > $expiration_time) {
+              $uploadFile = $uploadDirectory . pathinfo($file, PATHINFO_FILENAME) . ".part";
+              if (file_exists($metaFile)) {
+                unlink($metaFile);
+              }
+              if (file_exists($uploadFile)){
+                unlink($uploadFile);
+              }
+            }
+          }
+        }
+        closedir($metaDirectoryHandler);
+      }
     }
   }
   
@@ -932,33 +1024,11 @@ class Util {
    * @return int
    */
   public static function versionComparisonBinary($binary1, $binary2) {
-    return Util::versionComparison($binary1->getVersion(), $binary2->getVersion());
-  }
-  
-  /**
-   * @param string $version1
-   * @param string $version2
-   * @return int 1 if version2 is newer, 0 if equal and -1 if version1 is newer
-   */
-  public static function versionComparison($version1, $version2) {
-    $version1 = explode(".", $version1);
-    $version2 = explode(".", $version2);
-    
-    for ($i = 0; $i < sizeof($version1) && $i < sizeof($version2); $i++) {
-      $num1 = (int)$version1[$i];
-      $num2 = (int)$version2[$i];
-      if ($num1 > $num2) {
-        return -1;
-      }
-      else if ($num1 < $num2) {
-        return 1;
-      }
-    }
-    if (sizeof($version1) > sizeof($version2)) {
-      return -1;
-    }
-    else if (sizeof($version1) < sizeof($version2)) {
+    if (Comparator::greaterThan($binary1->getVersion(), $binary2->getVersion())){
       return 1;
+    }
+    else if (Comparator::lessThan($binary1->getVersion(), $binary2->getVersion())){
+      return -1;
     }
     return 0;
   }
@@ -975,7 +1045,13 @@ class Util {
     $version1 = substr($versionString1, 8, strpos($versionString1, "_", 7) - 8);
     $version2 = substr($versionString2, 8, strpos($versionString2, "_", 7) - 8);
     
-    return Util::versionComparison($version2, $version1);
+    if(Comparator::greaterThan($version2, $version1)){
+      return 1;
+    }
+    else if(Comparator::lessThan($version2, $version1)){
+      return -1;
+    }
+    return 0;
   }
   
   /**
@@ -1062,12 +1138,17 @@ class Util {
         
         case "import":
           if (file_exists(Factory::getStoredValueFactory()->get(DDirectories::IMPORT)->getVal() . "/" . $sourcedata)) {
-            rename(Factory::getStoredValueFactory()->get(DDirectories::IMPORT)->getVal() . "/" . $sourcedata, $target);
-            if (file_exists($target)) {
-              $success = true;
-            }
+            if (is_readable(Factory::getStoredValueFactory()->get(DDirectories::IMPORT)->getVal() . "/" . $sourcedata)) {
+              rename(Factory::getStoredValueFactory()->get(DDirectories::IMPORT)->getVal() . "/" . $sourcedata, $target);
+              if (file_exists($target)) {
+                $success = true;
+              }
+              else {
+                $msg = "Renaming of file from import directory failed!";
+              }
+            } 
             else {
-              $msg = "Renaming of file from import directory failed!";
+              $msg = "Incorrect permissions of import file, Hashtopolis server can't read the file";
             }
           }
           else {
@@ -1148,14 +1229,13 @@ class Util {
     $protocol = (isset($_SERVER['HTTPS']) && (strcasecmp('off', $_SERVER['HTTPS']) !== 0)) ? "https://" : "http://";
     $hostname = $_SERVER['HTTP_HOST'];
     $port = $_SERVER['SERVER_PORT'];
-    if (strpos($hostname, ":") !== false) {
-      $hostname = substr($hostname, 0, strpos($hostname, ":"));
-    }
+
     if ($protocol == "https://" && $port == 443 || $protocol == "http://" && $port == 80) {
       $port = "";
     }
     else {
       $port = ":$port";
+      $hostname = substr($hostname, 0, strrpos($hostname, ":")); //Needs to use strrpos in case of ipv6 because of multiple ':' characters
     }
     return $protocol . $hostname . $port;
   }

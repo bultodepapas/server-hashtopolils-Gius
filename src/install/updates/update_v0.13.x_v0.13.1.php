@@ -5,8 +5,7 @@ use DBA\HashType;
 
 if (!isset($TEST)) {
   /** @noinspection PhpIncludeInspection */
-  require_once(dirname(__FILE__) . "/../../inc/confv2.php");
-  require_once(dirname(__FILE__) . "/../../inc/info.php");
+  require_once(dirname(__FILE__) . "/../../inc/StartupConfig.class.php");
   require_once(dirname(__FILE__) . "/../../dba/init.php");
   require_once(dirname(__FILE__) . "/../../inc/Util.class.php");
 }
@@ -39,7 +38,7 @@ if (!isset($PRESENT["v0.13.x_hashTypes_1"])) {
 }
 
 if (!isset($PRESENT["v0.13.x_agentBinaries"])) {
-  Util::checkAgentVersion("python", "0.7.1", true);
+  Util::checkAgentVersionLegacy("python", "0.7.1", true);
   $EXECUTED["v0.13.x_agentBinaries"] = true;
 }
 if (!isset($PRESENT["v0.13.x_hash_length"])) {
