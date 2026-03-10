@@ -1,11 +1,10 @@
-version: '3.7'
 services:
   hashtopolis-backend:
     container_name: hashtopolis-backend
     image: ghcr.io/bultodepapas/server-hashtopolils-gius:latest
     restart: always
     volumes:
-      - hashtopolis:/usr/local/share/hashtopolis:Z
+      - hashtopolis:/usr/local/share/hashtopolis
       # - ./ssmtp.conf:/etc/ssmtp/ssmtp.conf
       # - ./jwks.json:/keys/jwks.json:ro
     environment:
