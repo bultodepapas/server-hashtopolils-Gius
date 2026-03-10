@@ -1,10 +1,10 @@
-# Hashtopolis
+# Hashtopolis (Fork)
 
-<img src="https://github.com/hashtopolis/server/blob/master/src/static/logo.png" alt='Hashtopolis' width="100">
+<img src="https://github.com/bultodepapas/server-hashtopolils-Gius/blob/master/src/static/logo.png" alt='Hashtopolis' width="100">
 
-[![CodeFactor](https://www.codefactor.io/repository/github/hashtopolis/server/badge)](https://www.codefactor.io/repository/github/hashtopolis/server)
-[![LoC](https://tokei.rs/b1/github/hashtopolis/server?category=code)](https://github.com/hashtopolis/server)
-[![Hashtopolis Build](https://github.com/hashtopolis/server/actions/workflows/ci.yml/badge.svg)](https://github.com/hashtopolis/server)
+[![CodeFactor](https://www.codefactor.io/repository/github/bultodepapas/server-hashtopolils-Gius/badge)](https://www.codefactor.io/repository/github/bultodepapas/server-hashtopolils-Gius)
+[![LoC](https://tokei.rs/b1/github/bultodepapas/server-hashtopolils-Gius?category=code)](https://github.com/bultodepapas/server-hashtopolils-Gius)
+[![Hashtopolis Build](https://github.com/bultodepapas/server-hashtopolils-Gius/actions/workflows/ci.yml/badge.svg)](https://github.com/bultodepapas/server-hashtopolils-Gius)
 
 Hashtopolis is a multi-platform client-server tool for distributing hashcat tasks to multiple computers. The main goals for Hashtopolis's development are portability, robustness, multi-user support, and multiple groups management.
 The application has two parts:
@@ -50,7 +50,7 @@ In an effort to make the Hashtopussy project conform to a more politically neutr
 
 ## Setup and Usage
 
-Please visit the [wiki](https://github.com/hashtopolis/server/wiki) and the documentation webpage [https://docs.hashtopolis.org/](https://docs.hashtopolis.org/) for more information on setup and upgrade.
+Please visit the [wiki](https://github.com/bultodepapas/server-hashtopolils-Gius/wiki) and the documentation webpage [https://docs.hashtopolis.org/](https://docs.hashtopolis.org/) for more information on setup and upgrade.
 
 Some screenshots of Hashtopolis (by winxp5421 and s3in!c): [Imgur1](http://imgur.com/gallery/Fj0s0) [Imgur2](http://imgur.com/gallery/LzTsI)
 

@@ -2,7 +2,7 @@ version: '3.7'
 services:
   hashtopolis-backend:
     container_name: hashtopolis-backend
-    image: hashtopolis/backend:latest
+    image: ghcr.io/bultodepapas/server-hashtopolils-gius:latest
     restart: always
     volumes:
       - hashtopolis:/usr/local/share/hashtopolis:Z
@@ -31,7 +31,7 @@ services:
       MYSQL_PASSWORD: $MYSQL_PASSWORD
   hashtopolis-frontend:
     container_name: hashtopolis-frontend
-    image: hashtopolis/frontend:latest
+    image: ghcr.io/bultodepapas/web-ui-gius:latest
     environment:
       HASHTOPOLIS_BACKEND_URL: $HASHTOPOLIS_BACKEND_URL
     restart: always

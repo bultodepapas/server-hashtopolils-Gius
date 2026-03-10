@@ -1,13 +1,13 @@
 {
-    "name": "hashtopolis/hashtopolis-skeleton",
-    "description": "A Hashtopolis API skeleton application",
+    "name": "bultodepapas/server-hashtopolils-gius",
+    "description": "A Hashtopolis API skeleton application (Fork)",
     "keywords": [
         "microframework",
         "rest",
         "router",
         "psr7"
     ],
-    "homepage": "http://github.com/hashtopolis/server",
+    "homepage": "https://github.com/bultodepapas/server-hashtopolils-Gius",
     "license": "MIT",
     "authors": [
         {
